@@ -36,16 +36,26 @@ operadoras_preferidas = {} # {user_id: operator_name}
 afiliados = {} # {user_id: [referrals]}
 indicado_por = {} # {user_id: referrer_id}
 user_country = {} # {user_id: country_id}
+alertas_ativos = set() # {user_id}
+historico_detalhado = {} # {user_id: [{'service': 'wa', 'number': '...', 'code': '...', 'date': '...'}]}
+cancelamentos_seguidos = {} # {user_id: count}
+bloqueio_temporario = {} # {user_id: timestamp_fim}
 
 PAISES = {
-    '73': 'Brasil 🇧🇷',
-    '12': 'EUA 🇺🇸',
-    '6': 'Indonésia 🇮🇩',
-    '0': 'Rússia 🇷🇺',
-    '16': 'Inglaterra 🇬🇧',
-    '86': 'Itália 🇮🇹',
-    '21': 'França 🇫🇷',
-    '22': 'Alemanha 🇩🇪'
+    '73': '🇧🇷 Brasil',
+    '12': '🇺🇸 EUA',
+    '6': '🇮🇩 Indonésia',
+    '0': '🇷🇺 Rússia',
+    '16': '🇬🇧 Inglaterra',
+    '86': '🇮🇹 Itália',
+    '21': '🇫🇷 França',
+    '22': '🇩🇪 Alemanha',
+    '39': '🇵🇾 Paraguai',
+    '1': '🇺🇦 Ucrânia',
+    '4': '🇵🇭 Filipinas',
+    '2': '🇰🇿 Cazaquistão',
+    '29': '🇵🇱 Polônia',
+    '18': '🇲🇲 Myanmar'
 }
 
 def apagar_msg_usuario(m):
@@ -125,6 +135,7 @@ SERVICOS_GRID = [
     ('ig', 'Instagram'), ('fb', 'Facebook'),
     ('go', 'Google/YouTube'), ('tk', 'TikTok'),
     ('tw', 'Twitter/X'), ('ds', 'Discord'),
+    ('dr', 'OpenAI/ChatGPT'), # Novo
     ('ub', 'Uber'), ('nf', 'Netflix'),
     ('am', 'Amazon'), ('ab', 'Airbnb'),
     ('ba', 'Badoo'), ('tl', 'Tinder'),
@@ -133,11 +144,14 @@ SERVICOS_GRID = [
     ('ot', 'Outros Apps')
 ]
 
+SERVICOS_CATEGORIAS = {
+    'Comunicações': ['wa', 'tg', 'ds'],
+    'Redes Sociais': ['ig', 'fb', 'tk', 'tw'],
+    'E-commerce/Apps': ['am', 'ub', 'nf', 'ab', 'st'],
+    'Ferramentas/AI': ['dr', 'go', 'mt', 'ym'],
+    'Dating/Outros': ['tl', 'ba', 'ot']
+}
 SERVICOS = dict(SERVICOS_GRID)
-SERVICOS['wa'] = 'Whatsapp'
-SERVICOS['tg'] = 'Telegram'
-SERVICOS['ot'] = 'Outros apps'
-
 MULTIPLICADOR_LUCRO = 7.0
 MODO_MANUTENCAO = False
 cache_precos_api = {}
@@ -157,8 +171,23 @@ def atualizar_precos_api():
                     if isinstance(costs, dict):
                         cost = costs.get('cost', 0)
                         count = costs.get('count', 0)
+                        
+                        estoque_antigo = cache_precos_api[cid].get(f"{service}_count", 0)
+                        novo_estoque = int(count)
+                        
+                        # Disparo de alertas se o estoque sair de 0 para algo
+                        if estoque_antigo == 0 and novo_estoque > 0 and alertas_ativos:
+                            nome_servico = SERVICOS.get(service, service)
+                            pais_nome = PAISES.get(cid, 'Desconhecido')
+                            msg_alerta = f"🚨 **ESTOQUE DISPONÍVEL!**\n\nChegou estoque de **{nome_servico}** ({pais_nome}).\nCorra antes que acabe!"
+                            for uid in list(alertas_ativos):
+                                try:
+                                    bot.send_message(uid, msg_alerta, parse_mode="Markdown")
+                                except:
+                                    pass
+                        
                         cache_precos_api[cid][service] = float(cost)
-                        cache_precos_api[cid][f"{service}_count"] = int(count)
+                        cache_precos_api[cid][f"{service}_count"] = novo_estoque
         except: pass
 
 threading.Thread(target=atualizar_precos_api).start()
@@ -179,9 +208,12 @@ def calcular_preco(service_code, country_id='73'):
     # Geral varia entre R$ 5,00 e R$ 30,00
     return max(min(preco_final, 30.0), 5.0)
 
-def api_get_number(service_code, country_id='73'):
+def api_get_number(service_code, country_id='73', operator=None):
     # Tenta HeroSMS (Sucessor oficial do SMS-Activate)
     url = f"https://hero-sms.com/stubs/handler_api.php?api_key={SMS_ACTIVATE_API}&action=getNumber&service={service_code}&country={country_id}"
+    if operator and operator.lower() != "padrão" and operator.lower() != "qualquer uma":
+        url += f"&operator={operator.lower()}"
+        
     try:
         res = requests.get(url, timeout=10)
         text = res.text
@@ -218,13 +250,35 @@ def background_check_sms(chat_id, user_id, id_order, message_id, provider):
     tempo_inicio = time.time()
     while time.time() - tempo_inicio < 900: # 15 minutos de monitoramento
         # Verifica se o pedido ainda é o mesmo (não foi cancelado ou substituído)
+def background_check_sms(chat_id, user_id, id_order, message_id, provider):
+    tempo_inicio = time.time()
+    total_espera = 900 # 15 minutos
+    
+    while time.time() - tempo_inicio < total_espera:
         if user_id not in compras or not compras[user_id] or compras[user_id]['id_order'] != id_order:
-            return # Encerra a thread se o pedido sumiu ou mudou
+            return
+
+        # Calcular Barra de Progresso
+        decorrido = time.time() - tempo_inicio
+        percent = min(int((decorrido / total_espera) * 100), 100)
+        blocos = int(percent / 10)
+        barra = "⏳ [" + "🔵" * blocos + "⚪" * (10 - blocos) + f"] {percent}%"
 
         sms_code = api_get_sms(id_order, provider)
         if sms_code:
             try:
                 compra = compras[user_id]
+                # Salvar no histórico detalhado
+                if user_id not in historico_detalhado: historico_detalhado[user_id] = []
+                historico_detalhado[user_id].append({
+                    'service': compra['service'],
+                    'number': compra['number'],
+                    'code': sms_code,
+                    'date': datetime.now().strftime("%d/%m %H:%M")
+                })
+                # Reset Anti-Abuso se recebeu SMS
+                cancelamentos_seguidos[user_id] = 0
+
                 msg = f"✨ **SMS RECEBIDO COM SUCESSO!** ✨\n"
                 msg += f"━━━━━━━━━━━━━━━━━━━━\n"
                 msg += f"📱 **Número:** `{compra['number']}`\n"
@@ -233,15 +287,30 @@ def background_check_sms(chat_id, user_id, id_order, message_id, provider):
                 msg += f"✅ Detectado automaticamente. Copie e use agora!"
                 
                 bot.edit_message_text(msg, chat_id, message_id, parse_mode="Markdown")
-                # Envia uma nova mensagem para garantir que o usuário receba a notificação sonora
                 bot.send_message(chat_id, f"🎉 **CHEGOU!**\nSeu código é: `{sms_code}`", parse_mode="Markdown")
-            except:
-                pass
-            
-            compras[user_id] = None # Finaliza o pedido no sistema
+            except: pass
+            compras[user_id] = None
             return
+
+        # Atualizar barra de progresso na mensagem a cada 15 segundos aproximadamente
+        try:
+            compra = compras[user_id]
+            msg_status = f"📝 **RECIBO DE ATIVAÇÃO**\n"
+            msg_status += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
+            msg_status += f"📦 **Serviço:** {compra['service']}\n"
+            msg_status += f"📞 **Número:** <code>{compra['number']}</code>\n"
+            msg_status += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n"
+            msg_status += f"{barra}\n"
+            msg_status += "🔍 Monitorando SMS em tempo real..."
             
-        time.sleep(8) # Intervalo entre checagens
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔄 Verificar Agora", callback_data="check_sms_now"))
+            markup.add(types.InlineKeyboardButton("❌ Cancelar / Estornar", callback_data="cancel_number"))
+            
+            bot.edit_message_text(msg_status, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
+        except: pass
+            
+        time.sleep(12)
 
 @bot.message_handler(commands=['start'])
 @bot.message_handler(func=lambda m: m.text == 'Start 🔄')
@@ -301,13 +370,7 @@ def cmd_pin(m):
     msg = f"🔑 **SEU PIN DE CLIENTE**\n\nSeu identificador único é: `{user_id}`\n\nUse este PIN para suporte ou identificação em depósitos manuais."
     enviar_e_limpar(m.chat.id, msg, parse_mode="Markdown")
 
-@bot.message_handler(commands=['contas'])
-def cmd_contas(m):
-    apagar_msg_usuario(m)
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="main_menu_back"))
-    msg = "🛒 **COMPRA DE CONTAS PRONTAS**\n\nEsta seção está em manutenção. Em breve você poderá comprar contas de WhatsApp, Telegram e Instagram já maturadas!"
-    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
+
 
 def menu_principal(m):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -320,15 +383,19 @@ def menu_principal(m):
     user_id = m.from_user.id
     saldo = saldos.get(user_id, 0.0)
     
-    msg = f"⭐ **BEM-VINDO, {display_name}!** ⭐\n\n"
-    msg += f"👤 **Cliente:** [`ID-{user_id}`](tg://user?id={user_id})\n"
-    msg += f"💰 **Saldo:** [R$ {saldo:.2f}](tg://user?id={user_id})\n\n"
+    msg = f"┏━━━━━━━━━━━━━━━━━━━━┓\n"
+    msg += f"    ⭐ **BEM-VINDO AO NEXUS SMS**\n"
+    msg += f"┗━━━━━━━━━━━━━━━━━━━━┛\n\n"
+    msg += f"👤 **CLIENTE:** `{display_name}`\n"
+    msg += f"🆔 **PIN:** `{user_id}`\n"
+    msg += f"💰 **SALDO:** `R$ {saldo:.2f}`\n\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"🚀 **SELECIONE UMA OPÇÃO ABAIXO:**\n"
-    msg += f"Navegue pelos botões para gerar números.\n"
+    msg += f"🚀 **PLATAFORMA DE NÚMEROS VIRTUAIS**\n"
+    msg += f"Ativações rápidas e seguras para mais de\n"
+    msg += f"50 aplicativos e 14 países.\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += f"🆘 **Suporte:** @CORVO291\n"
-    msg += f"🛡 **Seguro & Criptografado**"
+    msg += f"🆘 **SUPORTE:** @CORVO291\n"
+    msg += f"📢 **CANAL:** @NexusSMS_News\n"
     
     enviar_e_limpar(m.chat.id, msg, markup=markup, photo_path="banner_start.png", parse_mode="Markdown")
 
@@ -344,16 +411,18 @@ def btn_gerar(m):
 def btn_config(m):
     apagar_msg_usuario(m)
     markup = types.InlineKeyboardMarkup()
-    markup.row(types.InlineKeyboardButton("★ Selecionar Favoritos", callback_data="menu_fav"))
-    markup.row(types.InlineKeyboardButton("📊 Serviços mais comprados", callback_data="menu_stats"))
-    markup.row(types.InlineKeyboardButton("📞 Selecionar operadora", callback_data="menu_carrier"))
-    markup.row(types.InlineKeyboardButton("🔔 Setup de alertas", callback_data="menu_alerts"))
-    markup.row(types.InlineKeyboardButton("💸 Transferir saldo", callback_data="menu_transfer"))
-    markup.row(types.InlineKeyboardButton("👤 Perfil", callback_data="menu_profile"))
-    markup.row(types.InlineKeyboardButton("❌ Deletar conta e dados", callback_data="menu_delete"))
-    markup.row(types.InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="main_menu_back"))
+    markup.row(types.InlineKeyboardButton("⭐ Meus Favoritos", callback_data="menu_fav"))
+    markup.row(types.InlineKeyboardButton("🔥 Mais Vendidos", callback_data="menu_stats"), types.InlineKeyboardButton("📞 Operadora", callback_data="menu_carrier"))
+    markup.row(types.InlineKeyboardButton("🔔 Central de Alertas", callback_data="menu_alerts"))
+    markup.row(types.InlineKeyboardButton("💸 Transferir Saldo", callback_data="menu_transfer"))
+    markup.row(types.InlineKeyboardButton("❓ Dúvidas Frequentes", callback_data="menu_faq"))
+    markup.row(types.InlineKeyboardButton("👤 Ver Perfil", callback_data="menu_profile"))
+    markup.row(types.InlineKeyboardButton("❌ Deletar Dados", callback_data="menu_delete"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="main_menu_back"))
     
-    enviar_e_limpar(m.chat.id, "⚙️ **CONFIGURAÇÕES DO SISTEMA**\n\nPersonalize sua experiência e gerencie seus dados abaixo:", markup=markup, parse_mode="Markdown")
+    msg = "⚙️ **CENTRAL DE CONFIGURAÇÕES**\n\n"
+    msg += "Gerencie suas preferências, segurança e alertas do sistema Nexus abaixo:"
+    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text == '💳 Adicionar Saldo')
 def menu_adicionar_saldo(m):
@@ -377,22 +446,14 @@ def processar_valor_recarga(m):
         if valor < 15.0:
             enviar_e_limpar(m.chat.id, "❌ O valor mínimo é R$ 15,00.")
             return
-        
-        # Bônus para o Afiliado (10%)
-        user_id = m.from_user.id
-        if user_id in indicado_por:
-            ref_id = indicado_por[user_id]
-            bonus = valor * 0.10
-            saldos[ref_id] = saldos.get(ref_id, 0.0) + bonus
-            try: bot.send_message(ref_id, f"🎊 **Bônus de Afiliado!**\n\nSeu indicado `{user_id}` recarregou R$ {valor:.2f} e você ganhou R$ {bonus:.2f} de comissão!", parse_mode="Markdown")
-            except: pass
 
         enviar_e_limpar(m.chat.id, "⏳ Gerando PIX Copia e Cola, aguarde...")
         pix_data, erro_mp = gerar_pix(valor, m.from_user.id)
         if pix_data:
             pagamentos_pendentes[m.from_user.id] = {
                 "id": pix_data["id"],
-                "valor": valor
+                "valor": valor,
+                "time": time.time()
             }
             msg = f"✅ **PIX Gerado com Sucesso!**\n\n"
             msg += f"Valor: R$ {valor:.2f}\n\n"
@@ -422,11 +483,41 @@ def handle_check_pix(call):
             saldos[user_id] = 0
         saldos[user_id] += payment['valor']
         pagamentos_pendentes[user_id] = None
+        
+        # Bônus para o Afiliado (10%) após o pagamento ser efetuado
+        if user_id in indicado_por:
+            ref_id = indicado_por[user_id]
+            bonus = payment['valor'] * 0.10
+            saldos[ref_id] = saldos.get(ref_id, 0.0) + bonus
+            try: bot.send_message(ref_id, f"🎊 **Bônus de Afiliado!**\n\nSeu indicado `{user_id}` recarregou R$ {payment['valor']:.2f} e você ganhou R$ {bonus:.2f} de comissão!", parse_mode="Markdown")
+            except: pass
+            
         enviar_e_limpar(call.message.chat.id, f"🎉 **Pagamento Aprovado!**\n\nR$ {payment['valor']:.2f} adicionados ao seu saldo.\n💰 Seu novo saldo é R$ {saldos[user_id]:.2f}", parse_mode="Markdown")
     else:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔄 Verificar Novamente", callback_data="check_pix"))
         enviar_e_limpar(call.message.chat.id, f"⚠️ Pagamento não consta como aprovado.\n\nSe você já pagou, aguarde 1 minuto e tente de novo.", markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_faq')
+def handle_faq(call):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(types.InlineKeyboardButton("❓ Como recebo o código?", callback_data="faq_1"))
+    markup.row(types.InlineKeyboardButton("❓ O número não funcionou?", callback_data="faq_2"))
+    markup.row(types.InlineKeyboardButton("❓ Quanto tempo dura o número?", callback_data="faq_3"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="btn_config_voltar"))
+    
+    msg = "❓ **CENTRAL DE DÚVIDAS**\n\nSelecione uma pergunta abaixo para ver a resposta instantaneamente:"
+    enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('faq_'))
+def handle_faq_answer(call):
+    faq_id = call.data.split('_')[1]
+    respostas = {
+        "1": "📱 O código SMS aparece automaticamente na tela do bot assim que for recebido. Pode levar de 1 a 15 minutos dependendo do serviço.",
+        "2": "⚠️ Se o número não funcionar ou não receber SMS, basta clicar em CANCELAR. O saldo voltará para sua conta no mesmo instante!",
+        "3": "⏳ O número é temporário e serve apenas para UMA ativação. Após receber o SMS ou o tempo expirar, o número é descartado."
+    }
+    bot.answer_callback_query(call.id, respostas.get(faq_id, ""), show_alert=True)
 
 @bot.message_handler(func=lambda m: m.text == 'Seu Saldo')
 def ver_saldo(m):
@@ -436,64 +527,48 @@ def ver_saldo(m):
     enviar_e_limpar(m.chat.id, f"💰 Seu saldo é R${saldo:.2f}")
 
 @bot.message_handler(func=lambda m: m.text == '📱 Comprar Número' or m.text == '• Gerar Número')
-def comprar_numero_menu(m, filter_fav=False):
+def comprar_numero_menu(m):
     apagar_msg_usuario(m)
-    user_id = m.from_user.id if hasattr(m, 'from_user') else m.chat.id
-    cid = str(user_country.get(user_id, '73'))
     markup = types.InlineKeyboardMarkup()
     
-    # Categorias e organização
-    msg = f"💎 **MENU DE COMPRAS** 💎\n"
-    msg += f"📍 **País:** {PAISES.get(cid, 'Brasil')}\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg = f"💎 **MARKETPLACE NEXUS** 💎\n\n"
+    msg += f"Selecione uma categoria para explorar os serviços disponíveis no país selecionado:\n\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━━"
     
-    if filter_fav:
-        msg = f"⭐ **MEUS FAVORITOS** ⭐\n"
-        msg += f"📍 **País:** {PAISES.get(cid, 'Brasil')}\n"
-        msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        servicos = [s for s in SERVICOS_GRID if s[0] in favoritos.get(user_id, [])]
-    else:
-        servicos = SERVICOS_GRID
+    for cat in SERVICOS_CATEGORIAS.keys():
+        markup.row(types.InlineKeyboardButton(f"📂 {cat}", callback_data=f"cat_{cat}"))
 
-    if not servicos and filter_fav:
-        msg += "Você ainda não tem favoritos. Adicione em Configurações!"
-
-    for i in range(0, len(servicos), 2):
-        s1 = servicos[i]
-        p1 = calcular_preco(s1[0], cid)
-        btn1 = types.InlineKeyboardButton(f"{s1[1]} | R${p1:.2f}", callback_data=f"buy_{s1[0]}")
-        if i+1 < len(servicos):
-            s2 = servicos[i+1]
-            p2 = calcular_preco(s2[0], cid)
-            btn2 = types.InlineKeyboardButton(f"{s2[1]} | R${p2:.2f}", callback_data=f"buy_{s2[0]}")
-            markup.row(btn1, btn2)
-        else: markup.row(btn1)
-
-    # Rodapé do menu
-    markup.row(types.InlineKeyboardButton("🌍 Trocar País", callback_data="btn_change_country"))
-    markup.row(types.InlineKeyboardButton("🔄 Atualizar", callback_data="buy_menu_back"))
-    txt_fav = "🏠 Ver Todos" if filter_fav else "⭐ Ver Favoritos"
-    markup.row(types.InlineKeyboardButton(txt_fav, callback_data="toggle_filter_fav"), types.InlineKeyboardButton("🔗 Afiliados", callback_data="menu_afiliados"))
-    markup.row(types.InlineKeyboardButton("💳 Adicionar Saldo", callback_data="menu_add_saldo"))
-    markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="main_menu_back"))
+    markup.row(types.InlineKeyboardButton("⭐ Meus Favoritos", callback_data="toggle_filter_fav"))
+    markup.row(types.InlineKeyboardButton("💳 Adicionar Saldo", callback_data="menu_add_saldo")) # Atalho
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="main_menu_back"))
     
     enviar_e_limpar(m.chat.id if hasattr(m, 'chat') else m.message.chat.id, msg, markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data == 'btn_change_country')
-def handle_change_country_menu(call):
-    markup = types.InlineKeyboardMarkup()
-    for cid, name in PAISES.items():
-        markup.add(types.InlineKeyboardButton(name, callback_data=f"set_country_{cid}"))
-    markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="buy_menu_back"))
-    enviar_e_limpar(call.message.chat.id, "🌍 **SELECIONAR PAÍS**\n\nEscolha o país de origem do número:", markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('set_country_'))
-def set_user_country(call):
-    cid = call.data.split('_')[2]
+@bot.callback_query_handler(func=lambda call: call.data.startswith('cat_'))
+def handle_category_select(call):
+    cat_name = call.data.split('_')[1]
     user_id = call.from_user.id
-    user_country[user_id] = cid
-    bot.answer_callback_query(call.id, f"📍 País alterado para {PAISES.get(cid)}", show_alert=False)
-    comprar_numero_menu(call.message)
+    codes = SERVICOS_CATEGORIAS.get(cat_name, [])
+    servicos = [s for s in SERVICOS_GRID if s[0] in codes]
+    
+    markup = types.InlineKeyboardMarkup()
+    msg = f"📂 **CATEGORIA: {cat_name.upper()}**\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += "Selecione o serviço para ver as opções de países:"
+
+    for i in range(0, len(servicos), 2):
+        s1 = servicos[i]
+        btn1 = types.InlineKeyboardButton(f"{s1[1]}", callback_data=f"buy_{s1[0]}")
+        if i+1 < len(servicos):
+            s2 = servicos[i+1]
+            btn2 = types.InlineKeyboardButton(f"{s2[1]}", callback_data=f"buy_{s2[0]}")
+            markup.row(btn1, btn2)
+        else: markup.row(btn1)
+        
+    markup.row(types.InlineKeyboardButton("🔄 Atualizar Lista", callback_data=f"cat_{cat_name}")) # Atalho
+    markup.row(types.InlineKeyboardButton("💳 Saldo", callback_data="menu_add_saldo"), types.InlineKeyboardButton("🏠 Início", callback_data="main_menu_back"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar Categorias", callback_data="buy_menu_back"))
+    enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'toggle_filter_fav')
 def handle_toggle_filter(call):
@@ -525,10 +600,57 @@ def next_list(call):
     bot.answer_callback_query(call.id, "📚 Você já está na lista principal. Novos serviços serão adicionados automaticamente!", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
-def handle_buy(call):
+def handle_buy_service(call):
     user_id = call.from_user.id
     service_code = call.data.split('_')[1]
-    preco = calcular_preco(service_code)
+    saldo = saldos.get(user_id, 0.0)
+    
+    msg = f"💰 Saldo: R$ {saldo:.2f}\n"
+    msg += "-------------\n"
+    
+    markup = types.InlineKeyboardMarkup()
+    
+    for cid, country_name in PAISES.items():
+        preco = calcular_preco(service_code, cid)
+        estoque = cache_precos_api.get(cid, {}).get(f"{service_code}_count", 0)
+        
+        # Formatar nome do país para colocar a bandeira na frente (se houver)
+        parts = country_name.split(' ')
+        if len(parts) > 1 and not parts[-1].isalnum():
+            flag = parts[-1]
+            name = " ".join(parts[:-1])
+            formatted_name = f"{flag} {name}"
+        else:
+            formatted_name = country_name
+            
+        texto_linha = f"• {formatted_name} | {estoque} | R$ {preco:.2f}"
+        msg += f"{texto_linha}\n"
+        
+        markup.add(types.InlineKeyboardButton(texto_linha, callback_data=f"confirm_buy_{service_code}_{cid}"))
+        
+    markup.add(types.InlineKeyboardButton("⬅️ Voltar Categorias", callback_data="buy_menu_back"))
+    markup.add(types.InlineKeyboardButton("🏠 Menu Inicial", callback_data="main_menu_back"))
+    
+    enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_buy_'))
+def handle_confirm_buy(call):
+    user_id = call.from_user.id
+    parts = call.data.split('_')
+    service_code = parts[2]
+    cid = parts[3]
+    
+    # Check Bloqueio Temporário (Anti-Abuso)
+    if user_id in bloqueio_temporario:
+        if time.time() < bloqueio_temporario[user_id]:
+            restante = int((bloqueio_temporario[user_id] - time.time()) / 60)
+            bot.answer_callback_query(call.id, f"⚠️ ACESSO RESTRITO! Aguarde {restante} min devido a excesso de cancelamentos.", show_alert=True)
+            return
+        else:
+            del bloqueio_temporario[user_id]
+            cancelamentos_seguidos[user_id] = 0
+
+    preco = calcular_preco(service_code, cid)
     saldo_atual = saldos.get(user_id, 0.0)
     
     if saldo_atual < preco:
@@ -536,14 +658,27 @@ def handle_buy(call):
         return
         
     service_name = SERVICOS.get(service_code, "Serviço")
+    country_name = PAISES.get(cid, "Desconhecido")
     
-    enviar_e_limpar(call.message.chat.id, f"⏳ Solicitando número de {service_name} (Brasil)...")
+    # Pegar o nome do país formatado sem a bandeira para exibição limpa
+    c_parts = country_name.split(' ')
+    c_name_clean = " ".join(c_parts[:-1]) if len(c_parts) > 1 and not c_parts[-1].isalnum() else country_name
     
-    id_order, number, provider = api_get_number(service_code, user_country.get(user_id, '73'))
+    enviar_e_limpar(call.message.chat.id, f"⏳ Solicitando número de {service_name} ({c_name_clean})...")
+    
+    operadora_pref = operadoras_preferidas.get(user_id, 'Padrão')
+    id_order, number, provider = api_get_number(service_code, cid, operadora_pref)
     
     if id_order:
         saldos[user_id] -= preco
+        cancelamentos_seguidos[user_id] = cancelamentos_seguidos.get(user_id, 0) # Inicializa se não existir
         compras[user_id] = {'id_order': id_order, 'number': number, 'service': service_name, 'service_code': service_code, 'preco_pago': preco, 'provider': provider}
+        bot.answer_callback_query(call.id, "✅ Número Reservado!", show_alert=False)
+        
+        # Alerta de Saldo Baixo
+        if saldos[user_id] < 5.0:
+            try: bot.send_message(user_id, "⚠️ **Atenção:** Seu saldo está abaixo de R$ 5,00. Considere recarregar para não ficar sem números!", parse_mode="Markdown")
+            except: pass
         
         # Incrementa histórico
         historico_compras[user_id] = historico_compras.get(user_id, 0) + 1
@@ -552,13 +687,23 @@ def handle_buy(call):
         if demanda.get(service_code, 0) < 10:
             demanda[service_code] = demanda.get(service_code, 0) + 1
         
-        msg = f"✅ **NÚMERO GERADO!**\n"
-        msg += f"━━━━━━━━━━━━━━━━━━━━\n"
-        msg += f"📱 **Serviço:** {service_name}\n"
-        msg += f"📞 **Número:** `{number}`\n"
-        msg += f"━━━━━━━━━━━━━━━━━━━━\n"
-        msg += "⏳ **Aguardando SMS automaticamente...**\n"
-        msg += "O código aparecerá aqui assim que chegar."
+        msg = f"📝 **RECIBO DE ATIVAÇÃO**\n"
+        msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
+        msg += f"📦 **Serviço:** {service_name}\n"
+        msg += f"📍 **País:** {c_name_clean}\n"
+        msg += f"📞 **Número:** <code>{number}</code>\n"
+        msg += f"💰 **Valor:** R$ {preco:.2f}\n"
+        msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n"
+        msg += "⏳ **AGUARDANDO SMS...**\n"
+        msg += "Aparecerá abaixo automaticamente."
+        
+        # LOG DE COMPRA PARA ADMIN
+        log_compra = f"📱 **NOVA ATIVAÇÃO!**\n"
+        log_compra += f"👤 Usuário: `{user_id}`\n"
+        log_compra += f"📦 Serviço: {service_name}\n"
+        log_compra += f"💵 Preço: R$ {preco:.2f}"
+        try: bot.send_message(ADMIN_ID, log_compra, parse_mode="Markdown")
+        except: pass
         
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔄 Verificar Agora", callback_data="check_sms_now"))
@@ -569,7 +714,7 @@ def handle_buy(call):
         # Inicia o monitoramento automático em uma thread separada
         threading.Thread(target=background_check_sms, args=(call.message.chat.id, user_id, id_order, sent_msg.message_id, provider), daemon=True).start()
     else:
-        enviar_e_limpar(call.message.chat.id, f"❌ **ERRO DE ESTOQUE**\n\nNão foi possível obter um número de {service_name} no momento. Tente novamente em instantes.")
+        enviar_e_limpar(call.message.chat.id, f"❌ **ERRO DE ESTOQUE**\n\nNão foi possível obter um número de {service_name} ({c_name_clean}) no momento. Tente novamente em instantes.")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'cancel_number')
 def handle_cancel(call):
@@ -588,7 +733,15 @@ def handle_cancel(call):
         if demanda.get(service_code, 0) > -4:
             demanda[service_code] = demanda.get(service_code, 0) - 1
             
+        # Lógica Anti-Abuso (Incrementa cancelamentos)
+        cancelamentos_seguidos[user_id] = cancelamentos_seguidos.get(user_id, 0) + 1
+        if cancelamentos_seguidos[user_id] >= 5:
+            bloqueio_temporario[user_id] = time.time() + 600 # 10 minutos
+            enviar_e_limpar(call.message.chat.id, "🚫 **SISTEMA ANTI-ABUSO ATIVADO**\n\nVocê cancelou muitos números sem receber SMS. Sua conta foi suspensa por 10 minutos para proteger o estoque da plataforma.")
+            return
+
         enviar_e_limpar(call.message.chat.id, f"✅ Número cancelado e R${preco:.2f} reembolsados ao seu saldo.")
+        bot.answer_callback_query(call.id, "💰 Saldo Estornado!", show_alert=False)
     else:
         bot.answer_callback_query(call.id, "Nenhum número ativo para cancelar.", show_alert=True)
 
@@ -603,12 +756,32 @@ def handle_profile(call):
     msg += f"💰 **Saldo:** R$ {saldo:.2f}\n"
     msg += f"📱 **Total de números:** {total}\n"
     msg += f"📞 **Operadora:** {operadoras_preferidas.get(user_id, 'Padrão')}\n"
-    msg += f"📍 **País:** {PAISES.get(str(user_country.get(user_id, '73')), 'Brasil')}\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += "🚀 **Sistema de Números Virtuais de Alta Qualidade**"
     
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="btn_config_voltar"))
+    markup.row(types.InlineKeyboardButton("📜 Ver Últimas Compras", callback_data="menu_history_detail"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="btn_config_voltar"))
+    enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_history_detail')
+def handle_history_detail(call):
+    user_id = call.from_user.id
+    history = historico_detalhado.get(user_id, [])
+    
+    msg = "📜 **ÚLTIMAS 5 ATIVAÇÕES**\n\n"
+    if not history:
+        msg += "Você ainda não realizou nenhuma ativação."
+    else:
+        for item in history:
+            msg += f"📱 **{item['service']}**\n"
+            msg += f"📞 `{item['number']}`\n"
+            msg += f"💬 SMS: `{item['code']}`\n"
+            msg += f"📅 {item['date']}\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+            
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ Voltar ao Perfil", callback_data="menu_profile"))
     enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'btn_config_voltar')
@@ -726,11 +899,14 @@ def handle_alerts(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'set_alert_all')
 def set_alert_all(call):
+    alertas_ativos.add(call.from_user.id)
     bot.answer_callback_query(call.id, "✅ Alertas ativados para todos os serviços!", show_alert=True)
     handle_alerts(call)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'set_alert_none')
 def set_alert_none(call):
+    if call.from_user.id in alertas_ativos:
+        alertas_ativos.remove(call.from_user.id)
     bot.answer_callback_query(call.id, "🔕 Alertas desativados.", show_alert=True)
     handle_alerts(call)
 
@@ -1048,7 +1224,48 @@ def admin_finalizar_saldo(m, target_id):
     except:
         enviar_e_limpar(m.chat.id, "❌ Valor inválido.")
 
+def auto_check_payments():
+    while True:
+        time.sleep(15)
+        now = time.time()
+        for user_id, payment in list(pagamentos_pendentes.items()):
+            if not payment:
+                continue
+                
+            # Remove pagamentos gerados há mais de 30 minutos (1800 segundos) para não checar lixo
+            if now - payment.get("time", now) > 1800:
+                pagamentos_pendentes[user_id] = None
+                continue
+                
+            try:
+                if verificar_pagamento(payment['id']):
+                    saldos[user_id] = saldos.get(user_id, 0.0) + payment['valor']
+                    pagamentos_pendentes[user_id] = None
+                    
+                    # Bônus Afiliado
+                    if user_id in indicado_por:
+                        ref_id = indicado_por[user_id]
+                        bonus = payment['valor'] * 0.10
+                        saldos[ref_id] = saldos.get(ref_id, 0.0) + bonus
+                        try: bot.send_message(ref_id, f"🎊 **Bônus de Afiliado!**\n\nSeu indicado `{user_id}` recarregou R$ {payment['valor']:.2f} e você ganhou R$ {bonus:.2f} de comissão!", parse_mode="Markdown")
+                        except: pass
+                    
+                    # LOG DE VENDA PARA ADMIN
+                    log_msg = f"💰 **NOVO PAGAMENTO APROVADO!**\n"
+                    log_msg += f"👤 Usuário: `{user_id}`\n"
+                    log_msg += f"💵 Valor: R$ {payment['valor']:.2f}\n"
+                    log_msg += f"📅 Data: {datetime.now().strftime('%d/%m %H:%M')}"
+                    try: bot.send_message(ADMIN_ID, log_msg, parse_mode="Markdown")
+                    except: pass
+
+                    msg = f"🎉 **PIX Reconhecido Automaticamente!**\n\nR$ {payment['valor']:.2f} adicionados ao seu saldo.\n💰 Seu novo saldo é R$ {saldos[user_id]:.2f}"
+                    try: bot.send_message(user_id, msg, parse_mode="Markdown")
+                    except: pass
+            except:
+                pass
+
 # Iniciar ambos em paralelo
+threading.Thread(target=auto_check_payments, daemon=True).start()
 threading.Thread(target=start_bot, daemon=True).start()
 threading.Thread(target=run_schedule, daemon=True).start()
 run_flask()
