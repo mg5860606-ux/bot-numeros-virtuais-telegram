@@ -11,6 +11,39 @@ from flask import Flask
 import mercadopago
 import uuid
 import os
+import json
+
+DATABASE_FILE = "database.json"
+
+def salvar_dados():
+    data = {
+        "saldos": saldos,
+        "indicado_por": indicado_por,
+        "favoritos": favoritos,
+        "historico_compras": historico_compras,
+        "historico_detalhado": historico_detalhado,
+        "alertas_ativos": list(alertas_ativos),
+        "mensagens_bot": mensagens_bot
+    }
+    with open(DATABASE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def carregar_dados():
+    global saldos, indicado_por, favoritos, historico_compras, historico_detalhado, alertas_ativos, mensagens_bot
+    if os.path.exists(DATABASE_FILE):
+        try:
+            with open(DATABASE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                saldos.update({int(k): v for k, v in data.get("saldos", {}).items()})
+                indicado_por.update({int(k): int(v) for k, v in data.get("indicado_por", {}).items()})
+                favoritos.update({int(k): v for k, v in data.get("favoritos", {}).items()})
+                historico_compras.update({int(k): v for k, v in data.get("historico_compras", {}).items()})
+                historico_detalhado.update({int(k): v for k, v in data.get("historico_detalhado", {}).items()})
+                mensagens_bot.update({int(k): v for k, v in data.get("mensagens_bot", {}).items()})
+                for uid in data.get("alertas_ativos", []):
+                    alertas_ativos.add(int(uid))
+        except Exception as e:
+            print(f"Erro ao carregar banco de dados: {e}")
 
 TOKEN = '8810418278:AAGAy3zXey3OYn96rHJjzx45yHF6HQ8UqEI'
 ADMIN_ID = 8273924319
@@ -344,11 +377,11 @@ def start(m):
             ref_id = int(ref_id)
             if ref_id != user_id and user_id not in indicado_por:
                 indicado_por[user_id] = ref_id
-                if ref_id not in afiliados: afiliados[ref_id] = []
-                afiliados[ref_id].append(user_id)
+                # Removemos o afiliados[ref_id].append pois agora geramos a lista dinamicamente
+                salvar_dados()
         except: pass
         
-    menu_principal(m)
+    main_menu(m.chat.id, user_id)
 
 @bot.message_handler(commands=['recarregar'])
 def cmd_recarregar(m):
@@ -365,9 +398,10 @@ def cmd_afiliados(m):
         def __init__(self, m):
             self.message = m
             self.from_user = m.from_user
+            self.id = "0" # ID fake para evitar erro no answer_callback
     handle_afiliados(FakeCall(m))
 
-@bot.def main_menu(chat_id, user_id):
+def main_menu(chat_id, user_id):
     saldo = saldos.get(user_id, 0.0)
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('🛍️ Comprar Números', '💳 Recarregar')
@@ -593,11 +627,14 @@ def handle_toggle_filter(call):
     is_filtered = "FILTRO" in call.message.text
     comprar_numero_menu(call, filter_fav=not is_filtered)
 
-@bot.callback_query_handler(func=lambda call: call.data == '🎁 Afiliados')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_afiliados' or call.data == '🎁 Afiliados')
 def handle_afiliados(call):
     user_id = call.from_user.id
     link = f"https://t.me/{(bot.get_me().username)}?start={user_id}"
-    total_ref = len(afiliados.get(user_id, []))
+    
+    # Busca indicados (quem foi indicado por este usuário)
+    meus_indicados = [u for u, r in indicado_por.items() if r == user_id]
+    total_ref = len(meus_indicados)
     
     msg = "💰 **SISTEMA DE AFILIADOS**\n\n"
     msg += "Convide pessoas para o bot e ganhe **10% de bônus** sobre cada recarga que elas fizerem!\n\n"
@@ -823,7 +860,7 @@ def handle_delete(call):
     historico_compras[user_id] = 0
     favoritos[user_id] = []
     bot.answer_callback_query(call.id, "❌ Todos os seus dados locais foram deletados e saldo zerado.", show_alert=True)
-    menu_principal(call.message)
+    main_menu(call.message.chat.id, user_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_stats')
 def handle_stats(call):
