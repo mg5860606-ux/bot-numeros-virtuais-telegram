@@ -1075,10 +1075,8 @@ def cmd_atualizar_git(m):
         os.execl(sys.executable, sys.executable, *sys.argv)
         
     except Exception as e:
-        bot.edit_message_text(f"❌ **Erro na Atualização:**\n`{str(e)}`", m.chat.id, msg_status.message_id, parse_mode="Markdown")
-        
-    except Exception as e:
-        bot.edit_message_text(f"❌ **Erro na Atualização:**\n`{str(e)}`", m.chat.id, msg_status.message_id, parse_mode="Markdown")
+        try: bot.edit_message_text(f"❌ **Erro na Atualização:**\n`{str(e)}`", m.chat.id, msg_status.message_id, parse_mode="Markdown")
+        except: pass
 
 @bot.message_handler(commands=['painel'])
 def admin_panel(m):
