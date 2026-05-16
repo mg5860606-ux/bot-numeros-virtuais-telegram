@@ -1,3 +1,6 @@
 pyTelegramBotAPI
 requests
 schedule
+flask
+mercadopago
+python-dotenv
