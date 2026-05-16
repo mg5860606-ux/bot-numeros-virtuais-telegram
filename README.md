@@ -26,7 +26,6 @@ O bot foi desenvolvido para rodar em servidores como **HostCoins**, **Render** o
    - `MERCADOPAGO_ACCESS_TOKEN` (PIX)
 
 ## 🆘 Suporte
-Desenvolvido por **Antigravity AI**. 
 Contato do Proprietário: **@CORVO291**
 
 ---

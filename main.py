@@ -139,6 +139,7 @@ SERVICOS['tg'] = 'Telegram'
 SERVICOS['ot'] = 'Outros apps'
 
 MULTIPLICADOR_LUCRO = 7.0
+MODO_MANUTENCAO = False
 cache_precos_api = {}
 
 def atualizar_precos_api():
@@ -213,9 +214,50 @@ def api_cancel_number(id_order, provider="herosms"):
     except:
         pass
 
+def background_check_sms(chat_id, user_id, id_order, message_id, provider):
+    tempo_inicio = time.time()
+    while time.time() - tempo_inicio < 900: # 15 minutos de monitoramento
+        # Verifica se o pedido ainda é o mesmo (não foi cancelado ou substituído)
+        if user_id not in compras or not compras[user_id] or compras[user_id]['id_order'] != id_order:
+            return # Encerra a thread se o pedido sumiu ou mudou
+
+        sms_code = api_get_sms(id_order, provider)
+        if sms_code:
+            try:
+                compra = compras[user_id]
+                msg = f"✨ **SMS RECEBIDO COM SUCESSO!** ✨\n"
+                msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+                msg += f"📱 **Número:** `{compra['number']}`\n"
+                msg += f"💬 **Código:** `{sms_code}`\n"
+                msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+                msg += f"✅ Detectado automaticamente. Copie e use agora!"
+                
+                bot.edit_message_text(msg, chat_id, message_id, parse_mode="Markdown")
+                # Envia uma nova mensagem para garantir que o usuário receba a notificação sonora
+                bot.send_message(chat_id, f"🎉 **CHEGOU!**\nSeu código é: `{sms_code}`", parse_mode="Markdown")
+            except:
+                pass
+            
+            compras[user_id] = None # Finaliza o pedido no sistema
+            return
+            
+        time.sleep(8) # Intervalo entre checagens
+
 @bot.message_handler(commands=['start'])
 @bot.message_handler(func=lambda m: m.text == 'Start 🔄')
 def start(m):
+    user_id = m.from_user.id
+    
+    # Check Ban
+    if bloqueios.get(user_id):
+        bot.send_message(m.chat.id, "❌ **ACESSO NEGADO**\n\nSua conta foi suspensa por violar nossos termos de uso. Entre em contato com o suporte para mais informações.", parse_mode="Markdown")
+        return
+
+    # Check Maintenance
+    if MODO_MANUTENCAO and user_id != ADMIN_ID:
+        bot.send_message(m.chat.id, "🛠 **MODO MANUTENÇÃO**\n\nEstamos realizando melhorias no sistema. Voltaremos em breve! Acompanhe as novidades no canal oficial.", parse_mode="Markdown")
+        return
+
     apagar_msg_usuario(m)
     user_id = m.from_user.id
     lista_usuarios.add(user_id) # Adiciona à lista de broadcast
@@ -235,6 +277,38 @@ def start(m):
         
     menu_principal(m)
 
+@bot.message_handler(commands=['recarregar'])
+def cmd_recarregar(m):
+    menu_adicionar_saldo(m)
+
+@bot.message_handler(commands=['servicos'])
+def cmd_servicos(m):
+    comprar_numero_menu(m)
+
+@bot.message_handler(commands=['afiliados'])
+def cmd_afiliados(m):
+    # Cria um objeto fake de call para reaproveitar a função
+    class FakeCall:
+        def __init__(self, m):
+            self.message = m
+            self.from_user = m.from_user
+    handle_afiliados(FakeCall(m))
+
+@bot.message_handler(commands=['pin'])
+def cmd_pin(m):
+    apagar_msg_usuario(m)
+    user_id = m.from_user.id
+    msg = f"🔑 **SEU PIN DE CLIENTE**\n\nSeu identificador único é: `{user_id}`\n\nUse este PIN para suporte ou identificação em depósitos manuais."
+    enviar_e_limpar(m.chat.id, msg, parse_mode="Markdown")
+
+@bot.message_handler(commands=['contas'])
+def cmd_contas(m):
+    apagar_msg_usuario(m)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="main_menu_back"))
+    msg = "🛒 **COMPRA DE CONTAS PRONTAS**\n\nEsta seção está em manutenção. Em breve você poderá comprar contas de WhatsApp, Telegram e Instagram já maturadas!"
+    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
+
 def menu_principal(m):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('📱 Comprar Número')
@@ -246,15 +320,15 @@ def menu_principal(m):
     user_id = m.from_user.id
     saldo = saldos.get(user_id, 0.0)
     
-    msg = f"✨ [OLÁ, {display_name}!](tg://user?id={user_id}) ✨\n\n"
-    msg += f"👤 **Cliente:** [`P{user_id}`](tg://user?id={user_id})\n"
-    msg += f"💰 **Seu Saldo:** [R$ {saldo:.2f}](tg://user?id={user_id})\n\n"
+    msg = f"⭐ **BEM-VINDO, {display_name}!** ⭐\n\n"
+    msg += f"👤 **Cliente:** [`ID-{user_id}`](tg://user?id={user_id})\n"
+    msg += f"💰 **Saldo:** [R$ {saldo:.2f}](tg://user?id={user_id})\n\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"🚀 **O que deseja fazer hoje?**\n"
-    msg += f"Clique nos botões abaixo para navegar.\n"
+    msg += f"🚀 **SELECIONE UMA OPÇÃO ABAIXO:**\n"
+    msg += f"Navegue pelos botões para gerar números.\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += f"🆘 **Suporte:** @CORVO291\n"
-    msg += f"✅ **Sistema Online & Seguro**"
+    msg += f"🛡 **Seguro & Criptografado**"
     
     enviar_e_limpar(m.chat.id, msg, markup=markup, photo_path="banner_start.png", parse_mode="Markdown")
 
@@ -270,15 +344,16 @@ def btn_gerar(m):
 def btn_config(m):
     apagar_msg_usuario(m)
     markup = types.InlineKeyboardMarkup()
-    markup.row(types.InlineKeyboardButton("★ Selecionar Favoritos", callback_data="placeholder_fav"))
-    markup.row(types.InlineKeyboardButton("📊 Serviços mais comprados", callback_data="placeholder_stats"))
-    markup.row(types.InlineKeyboardButton("📞 Selecionar operadora", callback_data="placeholder_carrier"))
-    markup.row(types.InlineKeyboardButton("⚙️ Setup de alertas", callback_data="placeholder_alerts"))
-    markup.row(types.InlineKeyboardButton("💸 Transferir saldo (Em manutenção)", callback_data="placeholder_transfer"))
-    markup.row(types.InlineKeyboardButton("👤 Perfil", callback_data="placeholder_profile"))
-    markup.row(types.InlineKeyboardButton("❌ Deletar conta e dados", callback_data="placeholder_delete"))
+    markup.row(types.InlineKeyboardButton("★ Selecionar Favoritos", callback_data="menu_fav"))
+    markup.row(types.InlineKeyboardButton("📊 Serviços mais comprados", callback_data="menu_stats"))
+    markup.row(types.InlineKeyboardButton("📞 Selecionar operadora", callback_data="menu_carrier"))
+    markup.row(types.InlineKeyboardButton("🔔 Setup de alertas", callback_data="menu_alerts"))
+    markup.row(types.InlineKeyboardButton("💸 Transferir saldo", callback_data="menu_transfer"))
+    markup.row(types.InlineKeyboardButton("👤 Perfil", callback_data="menu_profile"))
+    markup.row(types.InlineKeyboardButton("❌ Deletar conta e dados", callback_data="menu_delete"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="main_menu_back"))
     
-    enviar_e_limpar(m.chat.id, "⚙️ **Menu de configurações**", markup=markup, parse_mode="Markdown")
+    enviar_e_limpar(m.chat.id, "⚙️ **CONFIGURAÇÕES DO SISTEMA**\n\nPersonalize sua experiência e gerencie seus dados abaixo:", markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text == '💳 Adicionar Saldo')
 def menu_adicionar_saldo(m):
@@ -368,12 +443,20 @@ def comprar_numero_menu(m, filter_fav=False):
     markup = types.InlineKeyboardMarkup()
     
     # Categorias e organização
-    msg = f"💎 **MENU DE COMPRAS** 💎\n📍 País: **{PAISES.get(cid, 'Brasil')}**\n\n"
+    msg = f"💎 **MENU DE COMPRAS** 💎\n"
+    msg += f"📍 **País:** {PAISES.get(cid, 'Brasil')}\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    
     if filter_fav:
-        msg = f"⭐ **MEUS FAVORITOS** ({PAISES.get(cid, 'Brasil')}) ⭐\n\n"
+        msg = f"⭐ **MEUS FAVORITOS** ⭐\n"
+        msg += f"📍 **País:** {PAISES.get(cid, 'Brasil')}\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
         servicos = [s for s in SERVICOS_GRID if s[0] in favoritos.get(user_id, [])]
     else:
         servicos = SERVICOS_GRID
+
+    if not servicos and filter_fav:
+        msg += "Você ainda não tem favoritos. Adicione em Configurações!"
 
     for i in range(0, len(servicos), 2):
         s1 = servicos[i]
@@ -390,8 +473,9 @@ def comprar_numero_menu(m, filter_fav=False):
     markup.row(types.InlineKeyboardButton("🌍 Trocar País", callback_data="btn_change_country"))
     markup.row(types.InlineKeyboardButton("🔄 Atualizar", callback_data="buy_menu_back"))
     txt_fav = "🏠 Ver Todos" if filter_fav else "⭐ Ver Favoritos"
-    markup.row(types.InlineKeyboardButton(txt_fav, callback_data="toggle_filter_fav"), types.InlineKeyboardButton("🔗 Afiliados", callback_data="placeholder_afiliados"))
+    markup.row(types.InlineKeyboardButton(txt_fav, callback_data="toggle_filter_fav"), types.InlineKeyboardButton("🔗 Afiliados", callback_data="menu_afiliados"))
     markup.row(types.InlineKeyboardButton("💳 Adicionar Saldo", callback_data="menu_add_saldo"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="main_menu_back"))
     
     enviar_e_limpar(m.chat.id if hasattr(m, 'chat') else m.message.chat.id, msg, markup=markup, parse_mode="Markdown")
 
@@ -416,7 +500,7 @@ def handle_toggle_filter(call):
     is_filtered = "FILTRO" in call.message.text
     comprar_numero_menu(call, filter_fav=not is_filtered)
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_afiliados')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_afiliados')
 def handle_afiliados(call):
     user_id = call.from_user.id
     link = f"https://t.me/{(bot.get_me().username)}?start={user_id}"
@@ -468,17 +552,24 @@ def handle_buy(call):
         if demanda.get(service_code, 0) < 10:
             demanda[service_code] = demanda.get(service_code, 0) + 1
         
-        msg = f"✅ Número gerado com sucesso! ({provider})\n\n"
-        msg += f"Serviço: {service_name}\n"
-        msg += f"Número: `{number}`\n\n"
-        msg += "Aguarde o código SMS e clique em '📥 Receber SMS' no menu."
+        msg = f"✅ **NÚMERO GERADO!**\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"📱 **Serviço:** {service_name}\n"
+        msg += f"📞 **Número:** `{number}`\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+        msg += "⏳ **Aguardando SMS automaticamente...**\n"
+        msg += "O código aparecerá aqui assim que chegar."
         
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("❌ Cancelar / Reembolsar", callback_data="cancel_number"))
+        markup.add(types.InlineKeyboardButton("🔄 Verificar Agora", callback_data="check_sms_now"))
+        markup.add(types.InlineKeyboardButton("❌ Cancelar / Estornar", callback_data="cancel_number"))
         
-        enviar_e_limpar(call.message.chat.id, msg, parse_mode="Markdown", markup=markup)
+        sent_msg = enviar_e_limpar(call.message.chat.id, msg, parse_mode="Markdown", markup=markup)
+        
+        # Inicia o monitoramento automático em uma thread separada
+        threading.Thread(target=background_check_sms, args=(call.message.chat.id, user_id, id_order, sent_msg.message_id, provider), daemon=True).start()
     else:
-        enviar_e_limpar(call.message.chat.id, f"❌ Erro ao solicitar número: {number} (Sem estoque ou erro na API)")
+        enviar_e_limpar(call.message.chat.id, f"❌ **ERRO DE ESTOQUE**\n\nNão foi possível obter um número de {service_name} no momento. Tente novamente em instantes.")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'cancel_number')
 def handle_cancel(call):
@@ -501,16 +592,20 @@ def handle_cancel(call):
     else:
         bot.answer_callback_query(call.id, "Nenhum número ativo para cancelar.", show_alert=True)
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_profile')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_profile')
 def handle_profile(call):
     user_id = call.from_user.id
     saldo = saldos.get(user_id, 0.0)
     total = historico_compras.get(user_id, 0)
-    msg = f"👤 **SEU PERFIL**\n\n"
-    msg += f"🆔 ID: `{user_id}`\n"
-    msg += f"💰 Saldo: R$ {saldo:.2f}\n"
-    msg += f"📱 Compras realizadas: {total}\n"
-    msg += f"📞 Operadora padrão: {operadoras_preferidas.get(user_id, 'Qualquer uma')}\n"
+    msg = f"👤 **SEU PERFIL PROFISSIONAL**\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"🆔 **Seu ID:** `{user_id}`\n"
+    msg += f"💰 **Saldo:** R$ {saldo:.2f}\n"
+    msg += f"📱 **Total de números:** {total}\n"
+    msg += f"📞 **Operadora:** {operadoras_preferidas.get(user_id, 'Padrão')}\n"
+    msg += f"📍 **País:** {PAISES.get(str(user_country.get(user_id, '73')), 'Brasil')}\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += "🚀 **Sistema de Números Virtuais de Alta Qualidade**"
     
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="btn_config_voltar"))
@@ -521,7 +616,7 @@ def config_voltar(call):
     # Simula o clique no botão de configurações para voltar ao menu
     btn_config(call.message)
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_delete')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_delete')
 def handle_delete(call):
     user_id = call.from_user.id
     saldos[user_id] = 0.0
@@ -530,20 +625,22 @@ def handle_delete(call):
     bot.answer_callback_query(call.id, "❌ Todos os seus dados locais foram deletados e saldo zerado.", show_alert=True)
     menu_principal(call.message)
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_stats')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_stats')
 def handle_stats(call):
     # Ordena os serviços por demanda (mais comprados)
-    mais_comprados = sorted(demanda.items(), key=lambda x: x[1], reverse=True)[:5]
-    msg = "📊 **SERVIÇOS MAIS COMPRADOS**\n\n"
+    mais_comprados = sorted(demanda.items(), key=lambda x: x[1], reverse=True)[:8]
+    msg = "📊 **SERVIÇOS EM ALTA (HOT)**\n\n"
+    msg += "Estes são os serviços com mais estoque e vendas no momento:\n\n"
     for code, pts in mais_comprados:
         nome = SERVICOS.get(code, code)
-        msg += f"• {nome}: {pts + 5} vendas recentes\n" # +5 para dar um ar de movimentado
+        icon = "🔥" if pts > 5 else "✅"
+        msg += f"{icon} **{nome}**: {pts + 15} ativações recentes\n"
     
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="btn_config_voltar"))
     enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_transfer')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_transfer')
 def handle_transfer(call):
     msg = enviar_e_limpar(call.message.chat.id, "💸 **TRANSFERÊNCIA DE SALDO**\n\nDigite o **ID** do usuário que vai receber o saldo:", parse_mode="Markdown")
     bot.register_next_step_handler(msg, processar_id_transferencia)
@@ -577,7 +674,7 @@ def processar_valor_transferencia(m, dest_id):
     except:
         enviar_e_limpar(m.chat.id, "❌ Erro no valor. Use números como 5.50")
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_carrier')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_carrier')
 def handle_carrier(call):
     markup = types.InlineKeyboardMarkup()
     markup.row(types.InlineKeyboardButton("Qualquer uma", callback_data="set_op_any"))
@@ -594,15 +691,16 @@ def set_operator(call):
     bot.answer_callback_query(call.id, f"✅ Operadora {op.capitalize()} selecionada!", show_alert=True)
     handle_carrier(call)
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_fav')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_fav')
 def handle_fav_menu(call):
     markup = types.InlineKeyboardMarkup()
-    # Lista alguns para favoritar
-    for code, name in [('wa', 'WhatsApp'), ('tg', 'Telegram'), ('ig', 'Instagram')]:
+    # Lista os principais serviços para favoritar
+    for code, name in SERVICOS_GRID[:10]: # Mostra os 10 primeiros para escolha
         status = "⭐" if code in favoritos.get(call.from_user.id, []) else "☆"
         markup.add(types.InlineKeyboardButton(f"{status} {name}", callback_data=f"toggle_fav_{code}"))
+    
     markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="btn_config_voltar"))
-    enviar_e_limpar(call.message.chat.id, "★ **MEUS FAVORITOS**\n\nClique para adicionar ou remover dos favoritos:", markup=markup, parse_mode="Markdown")
+    enviar_e_limpar(call.message.chat.id, "★ **GERENCIAR FAVORITOS**\n\nOs serviços selecionados aparecerão no topo do menu de compras:", markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('toggle_fav_'))
 def toggle_fav(call):
@@ -615,35 +713,63 @@ def toggle_fav(call):
         favoritos[user_id].append(code)
     handle_fav_menu(call)
 
-@bot.callback_query_handler(func=lambda call: call.data == 'placeholder_alerts')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_alerts')
 def handle_alerts(call):
-    bot.answer_callback_query(call.id, "🔔 Alertas de estoque ativados para todos os serviços!", show_alert=True)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔔 Ativar para TODOS", callback_data="set_alert_all"))
+    markup.add(types.InlineKeyboardButton("🔕 Desativar alertas", callback_data="set_alert_none"))
+    markup.add(types.InlineKeyboardButton("⬅️ Voltar", callback_data="btn_config_voltar"))
+    
+    msg = "🔔 **CENTRAL DE ALERTAS**\n\n"
+    msg += "Deseja ser notificado quando houver novos números em estoque?"
+    enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'set_alert_all')
+def set_alert_all(call):
+    bot.answer_callback_query(call.id, "✅ Alertas ativados para todos os serviços!", show_alert=True)
+    handle_alerts(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'set_alert_none')
+def set_alert_none(call):
+    bot.answer_callback_query(call.id, "🔕 Alertas desativados.", show_alert=True)
+    handle_alerts(call)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_add_saldo')
 def handle_menu_add_saldo(call):
     menu_adicionar_saldo(call.message)
 
+@bot.callback_query_handler(func=lambda call: call.data == 'check_sms_now')
+def handle_check_sms_now(call):
+    receber_sms(call.message)
+
 @bot.message_handler(func=lambda m: m.text == '📥 Receber SMS')
 def receber_sms(m):
     apagar_msg_usuario(m)
-    user_id = m.from_user.id
+    user_id = m.from_user.id if hasattr(m, 'from_user') else m.chat.id
     if user_id not in compras or not compras[user_id]:
-        enviar_e_limpar(m.chat.id, "❌ Você não tem nenhum número aguardando SMS no momento. Compre um número primeiro.")
+        enviar_e_limpar(m.chat.id if hasattr(m, 'chat') else m.chat.id, "❌ Você não tem nenhum número aguardando SMS no momento. Compre um número primeiro.")
         return
         
     compra = compras[user_id]
     id_order = compra['id_order']
     provider = compra.get('provider', 'sms_activate')
     
-    enviar_e_limpar(m.chat.id, f"⏳ Verificando SMS na API ({provider})... Aguarde.")
+    enviar_e_limpar(m.chat.id if hasattr(m, 'chat') else m.chat.id, f"⏳ Verificando SMS na API ({provider})... Aguarde.")
     
     sms_code = api_get_sms(id_order, provider)
     
     if sms_code:
-        enviar_e_limpar(m.chat.id, f"✅ O SMS CHEGOU!\n\nSeu código é: `{sms_code}`", parse_mode="Markdown")
+        msg = f"✅ **O SMS CHEGOU!**\n\n"
+        msg += f"Serviço: {compra['service']}\n"
+        msg += f"Código: `{sms_code}`\n\n"
+        msg += "Use o código no app correspondente. O número foi finalizado com sucesso."
+        enviar_e_limpar(m.chat.id if hasattr(m, 'chat') else m.chat.id, msg, parse_mode="Markdown")
         compras[user_id] = None # Finaliza o pedido
     else:
-        enviar_e_limpar(m.chat.id, "Ainda não chegou nenhum SMS. Aguarde mais um pouco e clique no botão novamente.")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔄 Tentar Novamente", callback_data="check_sms_now"))
+        markup.add(types.InlineKeyboardButton("❌ Cancelar Número", callback_data="cancel_number"))
+        enviar_e_limpar(m.chat.id if hasattr(m, 'chat') else m.chat.id, "Ainda não chegou nenhum SMS. Aguarde mais um pouco e tente de novo.", markup=markup)
 
 # Função para manter o bot ativo com Flask (Render exige isso)
 app = Flask(__name__)
@@ -685,17 +811,202 @@ def admin_panel(m):
     total_users = len(lista_usuarios)
     saldo_total = sum(saldos.values())
     
-    msg = "👑 **PAINEL DO ADMINISTRADOR**\n\n"
-    msg += f"👥 Total de Usuários: {total_users}\n"
-    msg += f"💰 Saldo Total no Bot: R$ {saldo_total:.2f}\n\n"
-    msg += "Escolha uma ação abaixo:"
+    msg = "👑 **PAINEL SUPREMO DO ADMINISTRADOR**\n\n"
+    msg += f"📊 **Estatísticas Rápidas:**\n"
+    msg += f"👥 Total de Usuários: `{total_users}`\n"
+    msg += f"💰 Saldo Total: `R$ {saldo_total:.2f}`\n"
+    msg += f"🛠 Manutenção: `{'ATIVADA 🔴' if MODO_MANUTENCAO else 'DESATIVADA 🟢'}`\n"
+    msg += f"📈 Lucro: `x{MULTIPLICADOR_LUCRO}`\n\n"
+    msg += "Escolha uma categoria para gerenciar:"
     
     markup = types.InlineKeyboardMarkup()
-    markup.row(types.InlineKeyboardButton("📢 Enviar Aviso Global", callback_data="admin_broadcast"))
-    markup.row(types.InlineKeyboardButton("💰 Adicionar Saldo Manual", callback_data="admin_add_saldo"))
-    markup.row(types.InlineKeyboardButton("📈 Ver Mais Stats", callback_data="placeholder_stats"))
+    markup.row(types.InlineKeyboardButton("👥 Usuários", callback_data="adm_menu_users"), types.InlineKeyboardButton("📦 Pedidos", callback_data="adm_menu_orders"))
+    markup.row(types.InlineKeyboardButton("⚙️ Sistema", callback_data="adm_menu_system"), types.InlineKeyboardButton("📡 Saldo API", callback_data="adm_check_api"))
+    markup.row(types.InlineKeyboardButton("📢 Aviso Global", callback_data="admin_broadcast"), types.InlineKeyboardButton("💬 Suporte Direto", callback_data="adm_direct_msg"))
     
     enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_menu_users')
+def adm_menu_users(call):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(types.InlineKeyboardButton("🔍 Buscar Usuário", callback_data="adm_search_user"))
+    markup.row(types.InlineKeyboardButton("💰 Add Saldo Manual", callback_data="admin_add_saldo"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="adm_back_main"))
+    enviar_e_limpar(call.message.chat.id, "👤 **GESTÃO DE USUÁRIOS**\n\nO que deseja fazer?", markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_menu_orders')
+def adm_menu_orders(call):
+    # Lista usuários com compras ativas
+    ativos = [uid for uid, c in compras.items() if c]
+    msg = "📦 **PEDIDOS ATIVOS NO MOMENTO**\n\n"
+    if not ativos:
+        msg += "Nenhum usuário com número ativo."
+    else:
+        for uid in ativos[:10]: # Mostra os 10 primeiros
+            c = compras[uid]
+            msg += f"• `{uid}`: {c['service']} ({c['number']})\n"
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.row(types.InlineKeyboardButton("❌ Estorno Forçado", callback_data="adm_force_refund"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="adm_back_main"))
+    enviar_e_limpar(call.message.chat.id, msg, markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_menu_system')
+def adm_menu_system(call):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(types.InlineKeyboardButton(f"🛠 Manutenção: {'OFF' if MODO_MANUTENCAO else 'ON'}", callback_data="adm_toggle_maint"))
+    markup.row(types.InlineKeyboardButton("📈 Alterar Multiplicador", callback_data="adm_edit_profit"))
+    markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="adm_back_main"))
+    enviar_e_limpar(call.message.chat.id, "⚙️ **CONFIGURAÇÕES DO SISTEMA**", markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_back_main')
+def adm_back_main(call):
+    admin_panel(call.message)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_toggle_maint')
+def adm_toggle_maint(call):
+    global MODO_MANUTENCAO
+    MODO_MANUTENCAO = not MODO_MANUTENCAO
+    bot.answer_callback_query(call.id, f"Manutenção {'Ativada' if MODO_MANUTENCAO else 'Desativada'}", show_alert=True)
+    adm_menu_system(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_check_api')
+def adm_check_api(call):
+    url = f"https://hero-sms.com/stubs/handler_api.php?api_key={SMS_ACTIVATE_API}&action=getBalance"
+    try:
+        res = requests.get(url, timeout=10)
+        balance = res.text.split(":")[1]
+        bot.answer_callback_query(call.id, f"💰 Saldo HeroSMS: ${balance}", show_alert=True)
+    except:
+        bot.answer_callback_query(call.id, "❌ Erro ao consultar API", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_edit_profit')
+def adm_edit_profit(call):
+    msg = enviar_e_limpar(call.message.chat.id, "📈 **ALTERAR LUCRO**\n\nDigite o novo multiplicador (Ex: 8.5):")
+    bot.register_next_step_handler(msg, process_edit_profit)
+
+def process_edit_profit(m):
+    global MULTIPLICADOR_LUCRO
+    try:
+        val = float(m.text.replace(',', '.'))
+        MULTIPLICADOR_LUCRO = val
+        enviar_e_limpar(m.chat.id, f"✅ Multiplicador alterado para x{val}")
+    except:
+        enviar_e_limpar(m.chat.id, "❌ Valor inválido.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_search_user')
+def adm_search_user(call):
+    msg = enviar_e_limpar(call.message.chat.id, "🔍 **BUSCAR USUÁRIO**\n\nDigite o ID do usuário:")
+    bot.register_next_step_handler(msg, process_search_user)
+
+def process_search_user(m):
+    try:
+        uid = int(m.text)
+        saldo = saldos.get(uid, 0.0)
+        compra = compras.get(uid)
+        status_ban = "🔴 BANIDO" if bloqueios.get(uid) else "🟢 ATIVO"
+        
+        msg = f"👤 **DETALHES DO USUÁRIO**\n\n"
+        msg += f"🆔 ID: `{uid}`\n"
+        msg += f"💰 Saldo: R$ {saldo:.2f}\n"
+        msg += f"🚦 Status: {status_ban}\n"
+        msg += f"📦 Ativo: {compra['service'] if compra else 'Nenhum'}\n"
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.row(types.InlineKeyboardButton("💰 Ajustar Saldo", callback_data=f"adm_adj_saldo_{uid}"))
+        markup.row(types.InlineKeyboardButton("🚫 Banir/Desbanir", callback_data=f"adm_toggle_ban_{uid}"))
+        markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="adm_menu_users"))
+        
+        enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
+    except:
+        enviar_e_limpar(m.chat.id, "❌ ID inválido.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('adm_adj_saldo_'))
+def adm_adj_saldo(call):
+    uid = int(call.data.split('_')[3])
+    msg = enviar_e_limpar(call.message.chat.id, f"💰 **AJUSTAR SALDO - ID {uid}**\n\nDigite o novo valor total do saldo ou use + e - (Ex: `+10` ou `50`):")
+    bot.register_next_step_handler(msg, lambda msg: process_adj_saldo(msg, uid))
+
+def process_adj_saldo(m, uid):
+    try:
+        texto = m.text.replace(',', '.')
+        if texto.startswith('+'):
+            val = float(texto[1:])
+            saldos[uid] = saldos.get(uid, 0.0) + val
+        elif texto.startswith('-'):
+            val = float(texto[1:])
+            saldos[uid] = max(0, saldos.get(uid, 0.0) - val)
+        else:
+            val = float(texto)
+            saldos[uid] = val
+            
+        enviar_e_limpar(m.chat.id, f"✅ Saldo do usuário `{uid}` atualizado para R$ {saldos[uid]:.2f}")
+        try: bot.send_message(uid, f"💰 Seu saldo foi atualizado pelo administrador para R$ {saldos[uid]:.2f}")
+        except: pass
+    except:
+        enviar_e_limpar(m.chat.id, "❌ Valor inválido. Use números como 10 ou +5.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('adm_toggle_ban_'))
+def adm_toggle_ban(call):
+    uid = int(call.data.split('_')[3])
+    if bloqueios.get(uid):
+        bloqueios[uid] = False
+        bot.answer_callback_query(call.id, "✅ Usuário desbanido.")
+    else:
+        bloqueios[uid] = True
+        bot.answer_callback_query(call.id, "🚫 Usuário banido.")
+    # Atualiza a view
+    class FakeMsg: pass
+    m = FakeMsg()
+    m.text = str(uid)
+    m.chat = call.message.chat
+    process_search_user(m)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_force_refund')
+def adm_force_refund(call):
+    msg = enviar_e_limpar(call.message.chat.id, "❌ **ESTORNO FORÇADO**\n\nDigite o ID do usuário para estornar a compra ativa:")
+    bot.register_next_step_handler(msg, process_force_refund)
+
+def process_force_refund(m):
+    try:
+        uid = int(m.text)
+        if uid in compras and compras[uid]:
+            compra = compras[uid]
+            id_order = compra['id_order']
+            provider = compra.get('provider', 'herosms')
+            preco = compra.get('preco_pago', 0.0)
+            
+            api_cancel_number(id_order, provider)
+            saldos[uid] = saldos.get(uid, 0.0) + preco
+            compras[uid] = None
+            
+            enviar_e_limpar(m.chat.id, f"✅ Estorno de R$ {preco:.2f} realizado para `{uid}`.")
+            try: bot.send_message(uid, f"⚠️ Sua compra foi cancelada e R$ {preco:.2f} foram estornados pelo administrador.")
+            except: pass
+        else:
+            enviar_e_limpar(m.chat.id, "❌ Este usuário não tem uma compra ativa.")
+    except:
+        enviar_e_limpar(m.chat.id, "❌ Erro ao processar estorno.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'adm_direct_msg')
+def adm_direct_msg(call):
+    msg = enviar_e_limpar(call.message.chat.id, "💬 **SUPORTE DIRETO**\n\nDigite o ID do usuário:")
+    bot.register_next_step_handler(msg, process_id_direct_msg)
+
+def process_id_direct_msg(m):
+    try:
+        uid = int(m.text)
+        msg = enviar_e_limpar(m.chat.id, f"✅ Usuário `{uid}` selecionado.\n\nDigite a mensagem que deseja enviar:")
+        bot.register_next_step_handler(msg, lambda msg: finalize_direct_msg(msg, uid))
+    except:
+        enviar_e_limpar(m.chat.id, "❌ ID inválido.")
+
+def finalize_direct_msg(m, uid):
+    try:
+        bot.send_message(uid, f"💬 **MENSAGEM DO SUPORTE**\n\n{m.text}", parse_mode="Markdown")
+        enviar_e_limpar(m.chat.id, "✅ Mensagem enviada com sucesso!")
+    except:
+        enviar_e_limpar(m.chat.id, "❌ Não foi possível enviar a mensagem (Usuário bloqueou o bot?)")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'admin_broadcast')
 def handle_admin_broadcast(call):
