@@ -223,7 +223,12 @@ def atualizar_precos_api():
                         cache_precos_api[cid][f"{service}_count"] = novo_estoque
         except: pass
 
-threading.Thread(target=atualizar_precos_api).start()
+def loop_atualizar_precos():
+    while True:
+        atualizar_precos_api()
+        time.sleep(600) # Atualiza a cada 10 minutos
+
+threading.Thread(target=loop_atualizar_precos, daemon=True).start()
 
 demanda = {k: 0 for k in PRECOS_BASE.keys()}
 
