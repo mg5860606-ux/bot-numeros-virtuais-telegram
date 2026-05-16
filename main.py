@@ -1061,14 +1061,21 @@ def cmd_atualizar_git(m):
         # Executa o git pull
         resultado = subprocess.check_output(["git", "pull", "origin", "main"], stderr=subprocess.STDOUT).decode("utf-8")
         
-        bot.edit_message_text(f"✅ **Git Atualizado com Sucesso!**\n\n`{resultado}`\n\n⚙️ PM2 Reiniciando sistema...", m.chat.id, msg_status.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"✅ **Git Atualizado com Sucesso!**\n\n`{resultado}`\n\n⚙️ Sistema reiniciando em 2 segundos...", m.chat.id, msg_status.message_id, parse_mode="Markdown")
         
         # Salva dados antes de fechar
         salvar_dados()
         
-        # Encerra o processo; o PM2 vai reiniciar o bot automaticamente com o novo código
+        # Pequena pausa para garantir que a mensagem acima seja enviada
+        time.sleep(2)
+        
+        # Tenta reiniciar o processo automaticamente
         import sys
-        sys.exit(0)
+        import os
+        os.execl(sys.executable, sys.executable, *sys.argv)
+        
+    except Exception as e:
+        bot.edit_message_text(f"❌ **Erro na Atualização:**\n`{str(e)}`", m.chat.id, msg_status.message_id, parse_mode="Markdown")
         
     except Exception as e:
         bot.edit_message_text(f"❌ **Erro na Atualização:**\n`{str(e)}`", m.chat.id, msg_status.message_id, parse_mode="Markdown")
