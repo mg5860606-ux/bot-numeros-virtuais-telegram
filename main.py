@@ -423,11 +423,11 @@ def menu_perfil(m):
     saldo = saldos.get(user_id, 0.0)
     total = historico_compras.get(user_id, 0)
     
-    msg = "👤 **SEU PERFIL NEXUS**\n"
+    msg = "👤 <b>SEU PERFIL NEXUS</b>\n"
     msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
-    msg += f"💵 **Saldo Disponível:** R$ {saldo:.2f}\n"
-    msg += f"📦 **Total de Ativações:** {total}\n"
-    msg += f"🆔 **PIN de Segurança:** `{user_id}`\n"
+    msg += f"💵 <b>Saldo Disponível:</b> R$ {saldo:.2f}\n"
+    msg += f"📦 <b>Total de Ativações:</b> {total}\n"
+    msg += f"🆔 <b>PIN de Segurança:</b> <code>{user_id}</code>\n"
     msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
     
     markup = types.InlineKeyboardMarkup()
@@ -455,9 +455,9 @@ def btn_config(m):
     markup.row(types.InlineKeyboardButton("💸 Transferir Saldo", callback_data="menu_transfer"))
     markup.row(types.InlineKeyboardButton("🏠 Voltar ao Início", callback_data="main_menu_back"))
     
-    msg = "⚙️ **CENTRAL DE AJUSTES**\n\n"
+    msg = "⚙️ <b>CENTRAL DE AJUSTES</b>\n\n"
     msg += "Gerencie suas preferências, segurança e alertas do sistema Nexus abaixo:"
-    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
+    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: m.text == '💳 Adicionar Saldo')
 def menu_adicionar_saldo(m):
@@ -468,8 +468,8 @@ def menu_adicionar_saldo(m):
     markup.row(types.InlineKeyboardButton("💎 Outro Valor", callback_data="add_val_custom"))
     markup.row(types.InlineKeyboardButton("⬅️ Voltar", callback_data="main_menu_back"))
     
-    msg = "💰 **CENTRAL DE RECARGAS**\n\nEscolha um valor pré-definido abaixo ou clique em 'Outro Valor' para digitar:\n\n⚠️ **Mínimo:** R$ 15,00"
-    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
+    msg = "💰 <b>CENTRAL DE RECARGAS</b>\n\nEscolha um valor pré-definido abaixo ou clique em 'Outro Valor' para digitar:\n\n⚠️ <b>Mínimo:</b> R$ 15,00"
+    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('add_val_'))
 def handle_add_val(call):
@@ -575,10 +575,10 @@ def handle_faq_answer(call):
 @bot.message_handler(func=lambda m: m.text == '🆘 Suporte')
 def ver_saldo(m):
     apagar_msg_usuario(m)
-    msg = "🆘 **CENTRAL DE SUPORTE**\n\nPara problemas com pagamentos, números ou dúvidas técnicas, entre em contato:\n\n👤 **Suporte:** @CORVO291\n📢 **Canal:** @NexusSMS_News"
+    msg = "🆘 <b>CENTRAL DE SUPORTE</b>\n\nPara problemas com pagamentos, números ou dúvidas técnicas, entre em contato:\n\n👤 <b>Suporte:</b> @CORVO291\n📢 <b>Canal:</b> @NexusSMS_News"
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏠 Voltar ao Início", callback_data="main_menu_back"))
-    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="Markdown")
+    enviar_e_limpar(m.chat.id, msg, markup=markup, parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: m.text == '🛍️ Comprar Números' or m.text == '• Gerar Número')
 def comprar_numero_menu(m):
@@ -1042,6 +1042,31 @@ def start_bot():
     bot.infinity_polling()
 
 # --- PAINEL ADMINISTRATIVO ---
+
+@bot.message_handler(commands=['atualizar'])
+def cmd_atualizar_git(m):
+    user_id = m.from_user.id
+    if user_id != ADMIN_ID:
+        return
+    
+    msg_status = bot.send_message(m.chat.id, "🔄 **Iniciando atualização do Git...**", parse_mode="Markdown")
+    
+    try:
+        import subprocess
+        # Executa o git pull
+        resultado = subprocess.check_output(["git", "pull", "origin", "main"], stderr=subprocess.STDOUT).decode("utf-8")
+        
+        bot.edit_message_text(f"✅ **Git Atualizado com Sucesso!**\n\n`{resultado}`\n\n⚙️ Reiniciando sistema...", m.chat.id, msg_status.message_id, parse_mode="Markdown")
+        
+        # Salva dados antes de reiniciar
+        salvar_dados()
+        
+        # Reinicia o processo do script
+        import sys
+        os.execl(sys.executable, sys.executable, *sys.argv)
+        
+    except Exception as e:
+        bot.edit_message_text(f"❌ **Erro na Atualização:**\n`{str(e)}`", m.chat.id, msg_status.message_id, parse_mode="Markdown")
 
 @bot.message_handler(commands=['painel'])
 def admin_panel(m):
